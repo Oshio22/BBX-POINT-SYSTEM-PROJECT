@@ -1,0 +1,69 @@
+using UnityEngine;
+using UnityEngine.UI;
+
+public class FinishFXManager : MonoBehaviour
+{
+    [Header("大字报动画组件 (把 FinishFXScreen 拖进来)")]
+    public Animator fxAnimator; 
+
+    [Header("四个独立的判定按钮")]
+    public Button burstButton;
+    public Button overButton;
+    public Button spinButton;
+    public Button extremeButton;
+
+    void Start()
+    {
+        // 🌟 1. 屏幕超大透明热区点击事件绑定（继续完好保留，100% 有效）
+        if (burstButton != null) burstButton.onClick.AddListener(() => PlayFX("BurstAnim"));
+        if (overButton != null) overButton.onClick.AddListener(() => PlayFX("OverAnim"));
+        if (spinButton != null) spinButton.onClick.AddListener(() => PlayFX("SpinAnim"));
+        if (extremeButton != null) extremeButton.onClick.AddListener(() => PlayFX("ExtremeAnim"));
+
+        // 游戏一开始，先把大字报大屏幕藏起来，不挡住对战盘
+        if (fxAnimator != null) fxAnimator.gameObject.SetActive(false);
+    }
+
+    // ====================================================
+    // 🌟【全新加入：键盘物理热键捕获总线】
+    // 彻底契合《FR传奇》式的盲操精髓！敲击瞬间 0 延迟呼叫对应的动画
+    // ====================================================
+    void Update()
+    {
+        // 敲击键盘 S 键 ➔ 瞬间触发 SPIN FINISH 旋转大字报
+        if (Input.GetKeyDown(KeyCode.S)) PlayFX("SpinAnim");
+
+        // 敲击键盘 O 键 ➔ 瞬间触发 OVER FINISH 极限大字报
+        if (Input.GetKeyDown(KeyCode.O)) PlayFX("OverAnim");
+
+        // 敲击键盘 B 键 ➔ 瞬间触发 BURST FINISH 爆裂大字报
+        if (Input.GetKeyDown(KeyCode.B)) PlayFX("BurstAnim");
+
+        // 敲击键盘 X 键 ➔ 瞬间触发 EXTREME FINISH 炸裂大字报
+        if (Input.GetKeyDown(KeyCode.X)) PlayFX("ExtremeAnim");
+    }
+
+    private void PlayFX(string animName)
+    {
+        if (fxAnimator != null)
+        {
+            // 先让大字报大屏幕显形
+            fxAnimator.gameObject.SetActive(true);
+            
+            // 啪！直接强制播放对应的 PNG 序列帧动画！
+            fxAnimator.Play(animName, 0, 0f);
+            
+            // 开启一个自动关闭的延时，等动画放完了自己隐形，0手工操作
+            CancelInvoke("HideFXScreen");
+            Invoke("HideFXScreen", 2.0f); // 2秒后自动隐藏，如果动画长可以自己改这个数字
+        }
+    }
+
+    private void HideFXScreen()
+    {
+        if (fxAnimator != null)
+        {
+            fxAnimator.gameObject.SetActive(false);
+        }
+    }
+}
