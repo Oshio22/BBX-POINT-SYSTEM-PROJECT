@@ -1,0 +1,281 @@
+using UnityEngine;
+using UnityEngine.UI;
+using TMPro; 
+using System.IO;
+using System.Collections;
+using System.Threading.Tasks;
+using System.Threading; 
+using System.Collections.Concurrent; 
+
+public class VCR : MonoBehaviour
+{
+    [Header("UI 元素")]
+    public TextMeshProUGUI vcrText; 
+    public Button vcrButton;       
+
+    [Header("相机配置 (把你的 RawImage 拖进来)")]
+    public RawImage cameraDisplayUI; 
+
+    private bool isRecording = false;
+    private string pcVideoSavePath;
+    
+    // 动态会话路径快照，防止多任务连续录制冲突
+    private string currentTempFrameFolder;
+    private string currentTempAudioPath;
+    private string currentSessionTimestamp; // 锁定单次录制的时间戳，确保音画路径严丝合缝
+
+    private int frameCounter = 0;
+    private WebCamTexture activeCamTexture;
+
+    private float recordingStartTime = 0f;
+    private string currentAudioDevice = null;
+    private AudioClip micAudioClip;
+
+    // 多线程异步优化变量（保持主线程截图不卡顿）
+    private Texture2D sharedScreenTex; 
+    private ConcurrentQueue<FrameTask> frameQueue = new ConcurrentQueue<FrameTask>(); 
+    private Thread imageWriterThread; 
+    private AutoResetEvent queueEvent = new AutoResetEvent(false); 
+
+    private struct FrameTask
+    {
+        public byte[] jpgBytes; 
+        public string savePath; 
+    }
+
+    void Start()
+    {
+        if (vcrButton != null) vcrButton.onClick.AddListener(OnVCRClicked);
+
+        string myVideos = System.Environment.GetFolderPath(System.Environment.SpecialFolder.MyVideos);
+        pcVideoSavePath = Path.Combine(myVideos, "BeybladeX_Camera_Videos");
+
+        if (vcrText != null)
+        {
+            vcrText.text = "VCR";
+            vcrText.color = Color.white;
+        }
+
+        if (Microphone.devices != null && Microphone.devices.Length > 0)
+        {
+            currentAudioDevice = Microphone.devices[0]; // 锁定系统默认第一台麦克风
+        }
+
+        // =========================================================================
+        // 【终极双保险硬件路由】：完美兼顾游戏本智能识名，与富士通平板无名后置盲抽！
+        // =========================================================================
+        WebCamDevice[] devices = WebCamTexture.devices;
+        if (devices.Length > 0)
+        {
+            string targetDeviceName = "";
+            bool foundExternalCam = false;
+
+            // 1. 第一保险：先尝试在游戏本上按名字精准辨认手机外接相机
+            for (int i = 0; i < devices.Length; i++)
+            {
+                string deviceNameLower = devices[i].name.ToLower();
+                
+                // 如果名字里包含了常见的手机外接相机关键字
+                if (deviceNameLower.Contains("iriun") || deviceNameLower.Contains("ivcam"))
+                {
+                    targetDeviceName = devices[i].name;
+                    foundExternalCam = true; // 标记找到了
+                    Debug.Log("[VCR 智能识名] 成功在游戏本上精准匹配到外接相机: " + targetDeviceName);
+                    break;
+                }
+            }
+
+            // 2. 第二保险：如果找了一圈没找到外接相机，说明在平板上！立刻自动切换为您原本的盲抽保底
+            if (!foundExternalCam)
+            {
+                // 沿用您之前最成功的平板潜规则：如果有多个相机就抽最后一个（后置），否则用第0个
+                int targetIndex = (devices.Length > 1) ? (devices.Length - 1) : 0;
+                targetDeviceName = devices[targetIndex].name;
+                Debug.Log("[VCR 平板保底] 未发现外接相机名，已自动切回平板盲抽模式，锁定索引: " + targetIndex);
+            }
+
+            // 3. 最终唤醒选定的相机设备
+            activeCamTexture = new WebCamTexture(targetDeviceName, 1280, 720, 30);
+            activeCamTexture.Play();
+
+            StartCoroutine(BufferRenderToUICoroutine());
+        }
+    }
+
+    private IEnumerator BufferRenderToUICoroutine()
+    {
+        yield return new WaitForSecondsRealtime(1.8f);
+        if (cameraDisplayUI != null && activeCamTexture != null && activeCamTexture.isPlaying)
+        {
+            cameraDisplayUI.texture = activeCamTexture;
+        }
+    }
+
+    public void OnVCRClicked()
+    {
+        if (!isRecording) StartCameraRecording();
+        else StopCameraRecording();
+    }
+
+    private void StartCameraRecording()
+    {
+        if (activeCamTexture == null && cameraDisplayUI != null && cameraDisplayUI.texture is WebCamTexture)
+        {
+            activeCamTexture = (WebCamTexture)cameraDisplayUI.texture;
+        }
+
+        isRecording = true;
+        frameCounter = 0;
+        recordingStartTime = Time.realtimeSinceStartup;
+
+        if (vcrText != null) { vcrText.text = "REC."; vcrText.color = Color.red; }
+
+        // 在开始录制时，全权生成并锁定单次唯一的当前时间戳，绝不更改！
+        currentSessionTimestamp = System.DateTime.Now.ToString("yyyyMMdd_HHmmss");
+        currentTempFrameFolder = Path.Combine("C:", "BeybladeX_Temp_Frames", "Session_" + currentSessionTimestamp);
+        currentTempAudioPath = Path.Combine(currentTempFrameFolder, "temp_mic.wav");
+
+        #if UNITY_STANDALONE_WIN || UNITY_EDITOR
+        if (!Directory.Exists(pcVideoSavePath)) Directory.CreateDirectory(pcVideoSavePath);
+        if (!Directory.Exists(currentTempFrameFolder)) Directory.CreateDirectory(currentTempFrameFolder);
+
+        if (!string.IsNullOrEmpty(currentAudioDevice))
+        {
+            micAudioClip = Microphone.Start(currentAudioDevice, false, 600, 44100); 
+        }
+
+        sharedScreenTex = new Texture2D(Screen.width, Screen.height, TextureFormat.RGB24, false);
+
+        while (frameQueue.TryDequeue(out _)) { }
+        imageWriterThread = new Thread(ImageWriterWorker);
+        imageWriterThread.IsBackground = true;
+        imageWriterThread.Start();
+
+        StartCoroutine(CaptureScreenDirectCoroutine());
+        Debug.Log($"[录制启动] 独立暂存路径: {currentTempFrameFolder}");
+        #endif
+    }
+
+    private void StopCameraRecording()
+    {
+        isRecording = false; 
+        if (vcrText != null) { vcrText.text = "VCR"; vcrText.color = Color.white; }
+
+        float recordingDuration = Time.realtimeSinceStartup - recordingStartTime;
+        
+        // 直接延用开始时的标志时间戳，确保头尾路径 100% 一致，稳稳抓到音频和图片文件夹
+        string videoName = "CamMatch_" + currentSessionTimestamp;
+
+        #if UNITY_STANDALONE_WIN || UNITY_EDITOR
+        StopAllCoroutines();
+
+        // 完好保留您完全正常、有声音的原始音频数据抓取逻辑
+        if (!string.IsNullOrEmpty(currentAudioDevice) && Microphone.IsRecording(currentAudioDevice))
+        {
+            Microphone.End(currentAudioDevice);
+            if (micAudioClip != null)
+            {
+                float[] samples = new float[micAudioClip.samples * micAudioClip.channels];
+                micAudioClip.GetData(samples, 0);
+                byte[] bytesData = new byte[samples.Length * 2];
+                for (int i = 0; i < samples.Length; i++) {
+                    short value = (short)(samples[i] * 32767f);
+                    System.BitConverter.GetBytes(value).CopyTo(bytesData, i * 2);
+                }
+                File.WriteAllBytes(currentTempAudioPath, bytesData);
+            }
+        }
+
+        queueEvent.Set(); 
+        if (imageWriterThread != null && imageWriterThread.IsAlive)
+        {
+            imageWriterThread.Join(2000); 
+        }
+
+        if (sharedScreenTex != null)
+        {
+            Destroy(sharedScreenTex);
+            sharedScreenTex = null;
+        }
+
+        string finalMp4Path = Path.Combine(pcVideoSavePath, videoName + ".mp4");
+        string ffmpegPath = Path.Combine(Application.streamingAssetsPath, "ffmpeg.exe").Replace("/", "\\");
+        string taskTempFolder = currentTempFrameFolder.Replace("/", "\\");
+        string taskOutputMp4Path = finalMp4Path.Replace("/", "\\");
+        string taskAudioPath = currentTempAudioPath.Replace("/", "\\");
+        int channels = micAudioClip != null ? micAudioClip.channels : 1;
+
+        int actualFileCount = Directory.Exists(taskTempFolder) ? Directory.GetFiles(taskTempFolder, "*.jpg").Length : 0;
+        
+        if (File.Exists(ffmpegPath) && actualFileCount > 0)
+        {
+            float requiredInputFPS = (float)actualFileCount / recordingDuration;
+            if (requiredInputFPS < 5f) requiredInputFPS = 30f; 
+
+            Task.Run(() => {
+                try {
+                    string videoCodecParams = " -c:v libx264 -preset ultrafast ";
+
+                    // -r 30 -vsync vfr: 强制锁死 30 帧输出，配合动态帧率，完美根除低功耗设备下的连续录屏快进漏洞！
+                    string args = "-f image2 -framerate " + requiredInputFPS.ToString() + " -i \"" + taskTempFolder + "\\frame_%04d.jpg\"";
+
+                    if (File.Exists(taskAudioPath) && new FileInfo(taskAudioPath).Length > 0) 
+                    {
+                        args += " -f s16le -ar 44100 -ac " + channels.ToString() + " -i \"" + taskAudioPath + "\" -vf \"scale=trunc(iw/2)*2:trunc(ih/2)*2\"" + videoCodecParams + " -c:a aac -b:a 128k -pix_fmt yuv420p -r 30 -vsync vfr -shortest -y \"" + taskOutputMp4Path + "\"";
+                    } 
+                    else 
+                    {
+                        args += " -vf \"scale=trunc(iw/2)*2:trunc(ih/2)*2\"" + videoCodecParams + " -pix_fmt yuv420p -r 30 -vsync vfr -y \"" + taskOutputMp4Path + "\"";
+                    }
+
+                    System.Diagnostics.Process startInfo = new System.Diagnostics.Process();
+                    startInfo.StartInfo.FileName = ffmpegPath;
+                    startInfo.StartInfo.Arguments = args;
+                    startInfo.StartInfo.CreateNoWindow = true; 
+                    startInfo.StartInfo.UseShellExecute = false;
+                    startInfo.StartInfo.RedirectStandardError = false; 
+                    
+                    startInfo.Start();
+                    try { startInfo.PriorityClass = System.Diagnostics.ProcessPriorityClass.Idle; } catch {}
+                    startInfo.WaitForExit(); 
+
+                    if (File.Exists(taskOutputMp4Path) && new FileInfo(taskOutputMp4Path).Length > 0) {
+if (Directory.Exists(taskTempFolder)) Directory.Delete(taskTempFolder, true);
+Debug.Log("[VCR 成功] 带有声音且绝对不快进的标准视频已安全生成落地！");
+}
+}
+catch (System.Exception ex) {
+Debug.LogError("后台音画合成抛出异常: " + ex.Message);
+}
+});
+}
+#endif
+}
+private IEnumerator CaptureScreenDirectCoroutine()
+{
+string targetFolder = currentTempFrameFolder;
+while (isRecording)
+{
+yield return new WaitForEndOfFrame();
+frameCounter++;
+string framePath = Path.Combine(targetFolder, string.Format("frame_{0:D04}.jpg", frameCounter));
+sharedScreenTex.ReadPixels(new Rect(0, 0, Screen.width, Screen.height), 0, 0);
+byte[] compressedJpgBytes = sharedScreenTex.EncodeToJPG(65);
+FrameTask task = new FrameTask { jpgBytes = compressedJpgBytes, savePath = framePath };
+frameQueue.Enqueue(task);
+queueEvent.Set();
+yield return new WaitForSeconds(1f / 30f);
+}
+}
+private void ImageWriterWorker()
+{
+while (isRecording || !frameQueue.IsEmpty)
+{
+queueEvent.WaitOne(100);
+while (frameQueue.TryDequeue(out FrameTask task))
+{
+try { File.WriteAllBytes(task.savePath, task.jpgBytes); } catch (System.Exception) {}
+}
+}
+}
+}
