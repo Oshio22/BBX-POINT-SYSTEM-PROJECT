@@ -1,0 +1,143 @@
+using UnityEngine;
+using TMPro;
+
+public class ScoreManager : MonoBehaviour
+{
+    [Header("UI文字组件")]
+    public TextMeshProUGUI textScoreA; 
+    public TextMeshProUGUI textScoreB; 
+
+    // ✨ 对应你今天刚摆好的 8 颗独立星星/徽章物体
+    [Header("左队4颗红色徽章")]
+    public GameObject starA1; 
+    public GameObject starA2; 
+    public GameObject starA3; 
+    public GameObject starA4;
+
+    [Header("右队4颗蓝色徽章")]
+    public GameObject starB1; 
+    public GameObject starB2; 
+    public GameObject starB3; 
+    public GameObject starB4;
+
+    private int scoreA = 0;
+    private int scoreB = 0;
+
+    void Update()
+    {
+        // --- PC端键盘快捷键福利（1加左分，2加右分，Space空格随时强制重置） ---
+        if (Input.GetKeyDown(KeyCode.Alpha1) || Input.GetKeyDown(KeyCode.Keypad1))
+        {
+            AddScoreA();
+        }
+
+        if (Input.GetKeyDown(KeyCode.Alpha2) || Input.GetKeyDown(KeyCode.Keypad2))
+        {
+            AddScoreB();
+        }
+
+        if (Input.GetKeyDown(KeyCode.Space))
+        {
+            ResetScores();
+        }
+    }
+
+    // 🔴 玩家 A（左边）点击 POINTS 按钮或按键盘 1 触发这里
+    public void AddScoreA()
+    {
+        if (scoreA < 4)
+        {
+            // 1. 如果还没到4分，正常加分，亮一颗星
+            scoreA++;
+        }
+        else if (scoreA == 4)
+        {
+            // 2. 如果已经是4分满分，再按第1下，变成 5（作为后台标记，提示满分了）
+            scoreA = 5;
+        }
+        else if (scoreA == 5)
+        {
+            // 3. 如果已经是5（即满分后按了第2下双击），直接全部清零重新开始！
+            ResetScores();
+            return; 
+        }
+
+        // 刷新左边屏幕显示
+        UpdateDisplayA();
+    }
+
+    // 🔵 玩家 B（右边）点击 POINTS 按钮或按键盘 2 触发这里
+    public void AddScoreB()
+    {
+        if (scoreB < 4)
+        {
+            scoreB++;
+        }
+        else if (scoreB == 4)
+        {
+            scoreB = 5;
+        }
+        else if (scoreB == 5)
+        {
+            ResetScores();
+            return;
+        }
+
+        UpdateDisplayB();
+    }
+
+    // 辅助方法：实时更新左边的数字和星星显隐
+    private void UpdateDisplayA()
+    {
+        if (textScoreA == null) return;
+
+        // 只有在 0-4 分时显示数字，满分双击确认期间也保持显示 4 
+        if (scoreA <= 4)
+        {
+            textScoreA.text = scoreA.ToString();
+        }
+        
+        // ✨ 核心逻辑：根据当前分数，自动点亮对应框里的徽章（SetActive 开启或关闭）
+        if (starA1 != null) starA1.SetActive(scoreA >= 1 && scoreA <= 4);
+        if (starA2 != null) starA2.SetActive(scoreA >= 2 && scoreA <= 4);
+        if (starA3 != null) starA3.SetActive(scoreA >= 3 && scoreA <= 4);
+        if (starA4 != null) starA4.SetActive(scoreA >= 4 && scoreA <= 4);
+    }
+
+    // 辅助方法：实时更新右边的数字和星星显隐
+    private void UpdateDisplayB()
+    {
+        if (textScoreB == null) return;
+
+        if (scoreB <= 4)
+        {
+            textScoreB.text = scoreB.ToString();
+        }
+
+        if (starB1 != null) starB1.SetActive(scoreB >= 1 && scoreB <= 4);
+        if (starB2 != null) starB2.SetActive(scoreB >= 2 && scoreB <= 4);
+        if (starB3 != null) starB3.SetActive(scoreB >= 3 && scoreB <= 4);
+        if (starB4 != null) starB4.SetActive(scoreB >= 4 && scoreB <= 4);
+    }
+
+    // 🧹 全局重置清零方法（双击完成，或者按空格键时运行）
+    public void ResetScores()
+    {
+        scoreA = 0;
+        scoreB = 0;
+
+        if (textScoreA != null) textScoreA.text = "0";
+        if (textScoreB != null) textScoreB.text = "0";
+
+        // 将所有星星全部重新隐形熄灭
+        if (starA1 != null) starA1.SetActive(false);
+        if (starA2 != null) starA2.SetActive(false);
+        if (starA3 != null) starA3.SetActive(false);
+        if (starA4 != null) starA4.SetActive(false);
+
+        if (starB1 != null) starB1.SetActive(false);
+        if (starB2 != null) starB2.SetActive(false);
+        if (starB3 != null) starB3.SetActive(false);
+        if (starB4 != null) starB4.SetActive(false);
+    }
+}
